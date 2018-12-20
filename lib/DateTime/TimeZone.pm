@@ -44,6 +44,10 @@ my %SpecialName = map { $_ => 1 }
             name => {
                 type => t('NonEmptyStr'),
             },
+            fall_forward_on_invalid_local_time => {
+                type => t('Bool'),
+                optional => 1,
+            },
         },
     );
 
@@ -60,6 +64,7 @@ my %SpecialName = map { $_ => 1 }
 
         unless ( $p{name} =~ m{/}
             || $SpecialName{ $p{name} } ) {
+warn "eh\n";
             if ( $p{name} eq 'floating' ) {
                 return DateTime::TimeZone::Floating->instance;
             }
@@ -113,8 +118,12 @@ my %SpecialName = map { $_ => 1 }
                 }
             }
         }
-
-        my $zone = $real_class->instance( name => $p{name}, is_olson => 1 );
+warn "New inst?\n";
+        my $zone = $real_class->instance(
+            name => $p{name},
+            fall_forward_on_invalid_local_time => $p{fall_forward_on_invalid_local_time},
+            is_olson => 1,
+        );
 
         if ( $zone->is_olson() ) {
             my $object_version
@@ -148,6 +157,10 @@ my %SpecialName = map { $_ => 1 }
                 type    => t('Bool'),
                 default => 0,
             },
+            fall_forward_on_invalid_local_time => {
+                type => t('Bool'),
+                optional => 1,
+            },
         },
     );
 
@@ -156,10 +169,13 @@ my %SpecialName = map { $_ => 1 }
         my $class = shift;
         my %p     = $validator->(@_);
 
+        use Data::Dumper; warn Dumper \%p;
+
         my $self = bless {
             name     => $p{name},
             spans    => $p{spans},
             is_olson => $p{is_olson},
+            fall_forward_on_invalid_local_time => $p{fall_forward_on_invalid_local_time},
         }, $class;
 
         foreach my $k (qw( last_offset last_observance rules max_year )) {
@@ -276,7 +292,15 @@ sub _spans_binary_search {
 
             $i += $c;
 
-            return if $i >= $max;
+            if ($i >= $max) {
+              # No span found for this time zone? If the user has asked,
+              # return the previous span so the offset to utc is higher,
+              # effectively moving the time forward whatever the difference
+              # in the two spans is (typically 1 hour for DST).
+              return $self->{spans}[ $i - 1 ] if $self->fall_forward_on_invalid_local_time;
+
+              return;
+            }
         }
         else {
 
@@ -430,6 +454,7 @@ sub is_utc {0}
 sub has_dst_changes {0}
 
 sub name { $_[0]->{name} }
+sub fall_forward_on_invalid_local_time { $_[0]->{fall_forward_on_invalid_local_time} }
 sub category { ( split /\//, $_[0]->{name}, 2 )[0] }
 
 sub is_valid_name {
@@ -626,7 +651,7 @@ for HPUX style time zones like C<'MET-1METDST'>.
 
 This class has the following methods:
 
-=head2 DateTime::TimeZone->new( name => $tz_name )
+=head2 DateTime::TimeZone->new( name => $tz_name, %options )
 
 Given a valid time zone name, this method returns a new time zone
 blessed into the appropriate subclass.  Subclasses are named for the
@@ -658,6 +683,16 @@ object is returned.
 
 If the "name" is an offset string, it is converted to a number, and a
 C<DateTime::TimeZone::OffsetOnly> object is returned.
+
+C<%options> may currently only contain the following option:
+
+=over 4
+
+=item * C<fall_forward_on_invalid_local_time>
+
+See L</"$tz->offset_for_local_datetime( $dt )"> below.
+
+=back
 
 =head3 The "local" time zone
 
@@ -694,6 +729,12 @@ for the given datetime.  Unlike the previous method, this method uses
 the local time's Rata Die days and seconds.  This should only be done
 when the corresponding UTC time is not yet known, because local times
 can be ambiguous due to Daylight Saving Time rules.
+
+If C<fall_forward_on_invalid_local_time> is true and no such local
+time exists for the given C<DateTime> (due to Daylight Savings Time
+changes), we will fall back to the nearest previous offset for local
+time. This will typically move the time B<forward> since the new
+offset from UTC will be larger.
 
 =head2 $tz->is_dst_for_datetime( $dt )
 
