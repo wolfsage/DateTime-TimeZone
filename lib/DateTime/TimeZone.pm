@@ -193,7 +193,7 @@ sub offset_for_datetime {
 sub offset_for_local_datetime {
     my $self = shift;
 
-    my $span = $self->_span_for_datetime( 'local', $_[0] );
+    my $span = $self->_span_for_datetime( 'local', $_[0], $_[1] );
 
     return $span->[OFFSET];
 }
@@ -210,6 +210,7 @@ sub _span_for_datetime {
     my $self = shift;
     my $type = shift;
     my $dt   = shift;
+    my $fall_forward_on_invalid_local_time = shift;
 
     my $method = $type . '_rd_as_seconds';
 
@@ -218,7 +219,7 @@ sub _span_for_datetime {
     my $span;
     my $seconds = $dt->$method();
     if ( $seconds < $self->max_span->[$end] ) {
-        $span = $self->_spans_binary_search( $type, $seconds );
+        $span = $self->_spans_binary_search( $type, $seconds, $fall_forward_on_invalid_local_time );
     }
     else {
         my $until_year = $dt->utc_year + 1;
@@ -244,7 +245,7 @@ sub _span_for_datetime {
 
 sub _spans_binary_search {
     my $self = shift;
-    my ( $type, $seconds ) = @_;
+    my ( $type, $seconds, $fall_forward_on_invalid_local_time ) = @_;
 
     my ( $start, $end ) = _keys_for_type($type);
 
@@ -276,7 +277,15 @@ sub _spans_binary_search {
 
             $i += $c;
 
-            return if $i >= $max;
+            if ($i >= $max) {
+              # No span found for this time zone? If the user has asked,
+              # return the previous span so the offset to utc is higher,
+              # effectively moving the time forward whatever the difference
+              # in the two spans is (typically 1 hour for DST).
+              return $self->{spans}[ $i - 1 ] if $fall_forward_on_invalid_local_time;
+
+              return;
+            }
         }
         else {
 
@@ -702,13 +711,19 @@ for the given datetime.  This takes into account historical time zone
 information, as well as Daylight Saving Time.  The offset is
 determined by looking at the object's UTC Rata Die days and seconds.
 
-=head2 $tz->offset_for_local_datetime( $dt )
+=head2 $tz->offset_for_local_datetime( $dt, [ $fall_forward_on_invalid_local_time ] )
 
 Given a C<DateTime> object, this method returns the offset in seconds
 for the given datetime.  Unlike the previous method, this method uses
 the local time's Rata Die days and seconds.  This should only be done
 when the corresponding UTC time is not yet known, because local times
 can be ambiguous due to Daylight Saving Time rules.
+
+If C<$fall_forward_on_invalid_local_time> is true and the local time for 
+C<$dt> does not exist in the time zone (due to DST changes for example), 
+fall back to the nearest previous offset for the local time. This will
+typically move the time B<forward> since the new offset from UTC will be
+larger.
 
 =head2 $tz->is_dst_for_datetime( $dt )
 
